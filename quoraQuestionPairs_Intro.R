@@ -58,6 +58,21 @@ fullstop <- function(q, fullstop = TRUE) {
         q
 }
 
+## word counts (corrected)
+nword <- function(q) {
+  sapply(gregexpr("\\W+", q), length) + 1
+}
+## word count diff
+nword_diff <- function(q1, q2) {
+  if (any(is.na(c(q1, q2)))) return(0)
+  abs(as.numeric(nword(q1) - nword(q2)))
+}
+## char count diff
+nchar_diff <- function(q1, q2) {
+  if (any(is.na(c(q1, q2)))) return(0)
+  abs(as.numeric(nchar(q1) - nchar(q2)))
+}
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load date --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
