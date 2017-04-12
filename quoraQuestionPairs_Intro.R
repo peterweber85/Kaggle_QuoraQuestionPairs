@@ -18,6 +18,16 @@ library("tm")
 library("tokenizers")
 library("data.table")
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Parameters -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+privateMac = FALSE
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Auxiliary functions -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 get_ascii <- function(x, invert = FALSE) {
         i <- grep("\\+", iconv(x, "latin1", "ASCII", "+"),
                   invert = !invert)
@@ -59,13 +69,21 @@ fullstop <- function(q, fullstop = TRUE) {
 }
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-# load date --------------------------------------------------------
+# load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
-test <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
-sample_submission <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
-
-countries <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
+if (privateMac){
+        # Private MacBook
+        train <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
+        test <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
+        sample_submission <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+        countries <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
+} else {
+        # Work MacBook
+        train <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/train.csv")
+        test <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/test.csv")
+        sample_submission <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+        countries <- read.delim(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/countryNames.txt")
+}
 countries <- lapply(countries, tolower)$countryName
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
