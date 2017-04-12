@@ -16,17 +16,60 @@ library("readr")
 library("gtools")
 library("tm")
 library("tokenizers")
+library("data.table")
+
+get_ascii <- function(x, invert = FALSE) {
+        i <- grep("\\+", iconv(x, "latin1", "ASCII", "+"),
+                  invert = !invert)
+        if (all(vapply(i, length, double(1)) == 0))
+                return(NA_character_)
+        x <- iconv(x, "latin1", "utf-8", " ")
+        x[i]
+}
+
+get_utf8 <- function(x) iconv(x, "latin1", "utf-8", "")
+
+wtoken <- function(q) {
+        ## remove periods, comas, question marks
+        q <- gsub("\\.|\\,|\\?|\\:|\\;|\\(|\\)|\\[|\\]|\\+|\\*|\\{|\\}",
+                  " ", tolower(q))
+        ## remove spaces
+        q <- gsub("[ ]{2,}", " ", gsub("[ ]${1,}", "", q))
+        ## remove dashes (assume one word)
+        q <- gsub("\u2014|\\-", "", q)
+        ## split into words
+        q <- strsplit(q, " ")
+        ## convert to utf-8 and return
+        lapply(q, get_utf8)
+}
+
+## filter for stopwords
+fullstop <- function(q, fullstop = TRUE) {
+        ## if non-null rm stopwords
+        if (fullstop) {
+                ## remove stopwords
+                q <- lapply(q, function(x) x[!x %in% stopwords])
+        }
+        ## remove remaining punctuation
+        q <- lapply(q, function(x) gsub("[[:punct:]]", "", x))
+        ## replace empty with blank
+        q[vapply(q, length, double(1)) == 0] <- NA_character_
+        ## return words
+        q
+}
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load date --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train <- fread(file = "/Users/peterweber/Projects/Kaggle/train.csv")
-test  <- fread(file ="/Users/peterweber/Projects/Kaggle/test.csv")
-sample <- read.csv(file ="/Users/peterweber/Projects/Kaggle/sample_submission.csv")
+train <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
+test <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
+sample_submission <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
 
+countries <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
+countries <- lapply(countries, tolower)$countryName
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-# remove stopwords etc... -----------------------------------------------
+# stopword dictionary -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "again",
@@ -69,22 +112,15 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
               "you", "your", "yours", "yourself", "yourselves", "the")
 
 
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# playground -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 aux <- train %>%
-        select(question1, question2) %>%
+        dplyr::select(question1, question2) %>%
         slice(1:10) %>%
-        mutate(question1 = strsplit(question1, " "),
-               question2 = strsplit(question2, " ")
-               )
-
-tokenize <- function(q1){
-        paste(tokenize_words(tolower(q1), stopwords = stopwords))
-}  
-
-aux <- train %>%
-        select(question1, question2) %>%
-        slice(1:10) %>%
-        mutate(tokens = tokenize(question1)
+        mutate(q1_token = wtoken(question1),
+               q2_token = wtoken(question2)
         )
 
 
