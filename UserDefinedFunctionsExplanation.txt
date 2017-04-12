@@ -1,0 +1,39 @@
+1. ASCII handler function (one input) 
+	-i <- checks for everything that is convertible
+	-IF CLAUSE NOT CLEAR?????? answered below
+	-returns latin1 to utf8 conversion
+	
+2. utf8 encoded (one input)
+	- returns latin1 to utf8 encoding
+	
+3. tokenize by word
+	- remove .,?:;()[]+*{}
+	- remove spaces "[ ]{2,}": matches space at least 2 times, "[ ]${1,}": matches space at
+		the end of line at least one time
+	- remove dashes
+	- splits string into words
+	- converts to utf8 and returns
+	
+4. filter for stopwords (one input)
+	- if fullstop == TRUE: return all the words that are not stopwords
+	- remove punctuation: [[:punct:]] finds all punctuation
+	- WHAT DOES Q[VAPPLY(Q, LENGTH, DOUBLE(1)) == 0] <- NA_CHARACTER_ DO?????	
+	
+5. word counts (one input) 
+	- length(double(1)) = 1, length(double(2)) = 2 etc...
+	- vapply(aux$q1_token[1], length, double(1)) e.g. gives number of words
+	
+6. word count diff (two inputs)
+	- if any of the two questions is NA, return 0
+	- else return number of word difference
+	
+7. character count diff (two inputs)
+	- works equally to word count diff
+	
+8. count matches
+	- return 0 if there are no matches
+	- otherwise returns number of matches. Why does he do q1 %in% q2 and then vice cersa?????
+	
+9. random sample
+	- 
+	
