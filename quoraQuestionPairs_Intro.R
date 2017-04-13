@@ -1,9 +1,8 @@
+rm(list=ls())
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # Libraries & auxiliary functions -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-rm(list=ls())
 
 library("RMySQL")
 library("dplyr")
@@ -17,6 +16,7 @@ library("gtools")
 library("tm")
 library("tokenizers")
 library("data.table")
+library("xgboost")
 
 ########################################
 ####### User defined functions  ########
@@ -206,9 +206,19 @@ logloss <- function(actual, predicted, eps = 1e-15) {
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/train.csv")
-test_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/test.csv")
-sample_submission_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/sample_submission.csv")
+# set flag for directory choice
+homeflag <- FALSE
+
+if (homeflag == TRUE) {
+  train_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/train.csv")
+  test_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/test.csv")
+  sample_submission_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/sample_submission.csv")
+} else {
+  train_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/train.csv")
+  test_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/test.csv")
+  sample_submission_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/sample_submission.csv")
+}
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # stopword dictionary -----------------------------------------------
@@ -260,9 +270,11 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 ####### Parse text/create variables  #######
 ############################################
 train <- train_
-## calculate vars for training data
+test <- test_
 
+## calculate vars for training data
 train <- train %>%
+        slice(1:1001) %>%
         mutate(nchars = nchar_diff(question1, question2),
                nmatch1 = nmatch(fullstop(wtoken(question1)),
                                 fullstop(wtoken(question2))),
@@ -280,24 +292,89 @@ train <- train %>%
                wordcor = wordorder(question1, question2),
                nonwords = nonwords(question1, question2))
 
+## calculate vars for training data
+test <- test %>%
+        slice(1:1001) %>%
+  mutate(nchars = nchar_diff(question1, question2),
+         nmatch1 = nmatch(fullstop(wtoken(question1)),
+                          fullstop(wtoken(question2))),
+         question1 = fullstop(wtoken(question1), FALSE),
+         question2 = fullstop(wtoken(question2), FALSE),
+         nmatchpct1 = nmatch1 / nword(question1),
+         nmatchpct2 = nmatch1 / nword(question2)) %>%
+  mutate(nwords = nword_diff(question1, question2),
+         nmatch2 = nmatch(question1, question2),
+         bigword = bigwordmatch(question1, question2),
+         chunks = chunker(question1, question2),
+         sames = samesies(question1, question2),
+         first = wfirst(question1, question2),
+         last = wlast(question1, question2),
+         wordcor = wordorder(question1, question2),
+         nonwords = nonwords(question1, question2))
+
 
 ########################################
 ####### Training the model  ############
 ########################################
+train_c <- train
 
 ## reduce and format data
-train <- train %>%
-        mutate(sames = as.numeric(sames),
+train_c <- train_c %>%
+        mutate(is_duplicate = as.numeric(is_duplicate),
+               sames = as.numeric(sames),
                first = as.numeric(first),
-               last = as.numeric(last)) %>%
+               last = as.numeric(last),
+               nonwords = as.numeric(nonwords)) %>%
         .[, !names(.) %in% c("id", "qid1", "qid2", "nwords",
-                             "question1", "question2")]
+                             "question1", "question2")]         # WHY TAKE OUT nwords ??? compare!
 
-## create test set #1
+## create valid set #1 & 2
 d1 <- train %>%
         rsamp(1000)
-
-## create test set #2
 d2 <- train %>%
         rsamp(1000)
 
+## using XGBoost algorithm (according to https://cran.r-project.org/web/packages/xgboost/vignettes/xgboostPresentation.html)
+
+# create data matrix for xgb model
+train.model <- xgb.DMatrix(data = as.matrix(train_c %>% select(-is_duplicate)), label = train_c$is_duplicate)
+
+num_class = 2
+#nthread = 8  #if not set, use of all threads
+nfold = 5
+nround = 10
+max_depth = 15
+eta = 1
+
+# set the model parameters
+params <- list(objective = "binary:logitraw",
+               max_depth = max_depth,
+               eta = eta
+)
+
+# do a cross-validation run to find the optimal parameters
+cv <- xgb.cv(train.model, params = params, nfold = nfold, nround = nround)
+
+# train the final model
+xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nround = nround, objective = "binary:logitraw")
+
+
+########################################
+####### Predicting the test set ########
+########################################
+test_c <- test
+
+## reduce and format data
+test_c <- test_c %>%
+  mutate(sames = as.numeric(sames),
+         first = as.numeric(first),
+         last = as.numeric(last),
+         nonwords = as.numeric(nonwords)) %>%
+  .[, !names(.) %in% c("test_id", "nwords",
+                       "question1", "question2")]
+
+# prediction on test data
+predictions <- predict(model, newdata = as.matrix(test_c))
+predictions
+
+# condition the predictions for submission according to sample-submission
