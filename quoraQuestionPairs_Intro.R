@@ -199,10 +199,6 @@ samesies <- function(q1, q2) {
         mapply(foo, q1, q2)
 }
 
-## word intersects
-calcIntersect <- function(q1, q2){
-        intersect(q1,q2)
-}
 
 ## logloss function
 logloss <- function(actual, predicted, eps = 1e-15) {
@@ -283,13 +279,13 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 train <- train %>%
-        mutate(question1 = fullstop(wtoken(question1), TRUE)
-               ,question2 = fullstop(wtoken(question2), TRUE)
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
         )
 
 test <- test %>%
-        mutate(question1 = fullstop(wtoken(question1), TRUE)
-               ,question2 = fullstop(wtoken(question2), TRUE)
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
         )
 
 allWordsTrain <-  unlist(c(train$question1, train$question2))
@@ -308,7 +304,52 @@ wc1_Test <- wordcloud(corpus, max.words = 500, random.order = FALSE, color = pal
 specialWordsTrain <- c()
 specialWordsTest <- c()
 
-## Or alternatively compute tf-idf in order to classify words in questions that are not part of the intersect between two questions
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# tf-idf -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+get_weight <- function(count, eps=10000, min_count=2){
+        ifelse(count < min_count, 0, 1/(count + eps))
+}
+
+counts <- train %>%
+                select(question1, question2) %>% 
+                unlist() %>% 
+                table() %>% 
+        as.data.frame() %>% 
+        mutate(weight = get_weight(Freq)) %>% 
+        select(-Freq)
+        
+colnames(counts) <- c("word", "weight")        
+
+## word intersects
+calcIntersect <- function(q1, q2){
+        intersect(q1,q2)
+}
+
+word_shares <- function(q2){
+        q2words <- data.table::setdiff(q2, stopwords)[1]
+        
+        #if(len(q1words) == 0) return('0:0:0:0:0')
+        if(length(q2words) == 0) return('0:0:0:0:0')
+        
+        return(q2words)
+}
+
+trainSlice <- train[1:100, 
+                    .(q1words = setdiff(question1, stopwords)
+                      ,q2words = setdiff(question2, stopwords)
+                      ,q1stops = intersect(question1, stopwords)
+                      ,q2stops = intersect(question2, stopwords)
+)]
+                dplyr::slice(1:10) %>% 
+        mutate(q1words = setdiff(question1, stopwords)
+                ,q2words = setdiff(question2, stopwords)
+                ,q1stops = intersect(question1, stopwords)
+                ,q2stops = intersect(question2, stopwords))
+
+setdiff(trainSlice$question1, stopwords)
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -375,4 +416,5 @@ cv <- xgb.cv(train.model, params = params, nthread = nthread, nfold = nfold, nro
 xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nthread = nthread, nround = nround, objective = "binary:logitraw")
 importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
 
+sapply(df, function(x) )
 
