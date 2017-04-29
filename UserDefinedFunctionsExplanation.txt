@@ -1,12 +1,14 @@
-1. ASCII handler function (one input) 
+
+
+1. get_ascii: ASCII handler function (one input) 
 	-i <- checks for everything that is convertible
 	-IF CLAUSE NOT CLEAR?????? answered below
 	-returns latin1 to utf8 conversion
 	
-2. utf8 encoded (one input)
+2. get_utf8: utf8 encoded (one input)
 	- returns latin1 to utf8 encoding
 	
-3. tokenize by word
+3. wtoken: tokenize by word
 	- remove .,?:;()[]+*{} and to lower
 	- remove spaces "[ ]{2,}": matches space at least 2 times, "[ ]${1,}": matches space at
 		the end of line at least one time
@@ -65,4 +67,6 @@
 
 
 -> function that detects countries, if they appear in both questions
+-> generate wordcloud in order to figure out word families: https://www.kaggle.com/anokas/quora-question-pairs/data-analysis-xgboost-starter-0-35460-lb
+-> if set(question1) contains set of question2 and reverse —> 1
 -> 

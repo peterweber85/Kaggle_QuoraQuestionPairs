@@ -5,19 +5,15 @@
 
 rm(list=ls())
 
-library("RMySQL")
-library("dplyr")
-library("plotly")
-library("lubridate")
-library("reshape")
-library("reshape2")
-library("knitr")
-library("readr")
-library("gtools")
-library("tm")
-library("tokenizers")
-library("data.table")
-library("xgboost")
+require("dplyr")
+require("data.table")
+require("xgboost")
+
+require("tokenizers")
+require("tm")
+require("SnowballC")
+require("wordcloud")
+require("RColorBrewer")
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # Parameters -----------------------------------------------
@@ -202,6 +198,12 @@ samesies <- function(q1, q2) {
         }
         mapply(foo, q1, q2)
 }
+
+## word intersects
+calcIntersect <- function(q1, q2){
+        intersect(q1,q2)
+}
+
 ## logloss function
 logloss <- function(actual, predicted, eps = 1e-15) {
         predicted = pmin(pmax(predicted, eps, na.rm = TRUE),
@@ -209,6 +211,7 @@ logloss <- function(actual, predicted, eps = 1e-15) {
         - (sum(actual * log(predicted) + (1 - actual) *
                        log(1 - predicted), na.rm = TRUE)) / length(actual)
 }
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load data --------------------------------------------------------
@@ -226,7 +229,10 @@ if (privateMac){
         sample_submission_ <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
         countries_ <- read.delim(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/countryNames.txt")
 }
+
 countries_ <- lapply(countries_, tolower)$countryName
+train <-  train_
+test <- test_
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # stopword dictionary -----------------------------------------------
@@ -273,53 +279,81 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# create wordcloud -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+train <- train %>%
+        mutate(question1 = fullstop(wtoken(question1), TRUE)
+               ,question2 = fullstop(wtoken(question2), TRUE)
+        )
+
+test <- test %>%
+        mutate(question1 = fullstop(wtoken(question1), TRUE)
+               ,question2 = fullstop(wtoken(question2), TRUE)
+        )
+
+allWordsTrain <-  unlist(c(train$question1, train$question2))
+allWordsTest <- unlist(c(test$question1, test$question2))
+
+corpusTrain <- Corpus(VectorSource(allWordsTrain))
+corpusTest <- Corpus(VectorSource(allWordsTest))
+
+pal <- brewer.pal(9,"BuGn")
+pal <- pal[-(1:4)]
+
+wc1_Train <- wordcloud(corpus, max.words = 500, random.order = FALSE, color = pal, random.color = TRUE)
+wc1_Test <- wordcloud(corpus, max.words = 500, random.order = FALSE, color = pal, random.color = TRUE)
+
+## Include here manually words that appear often, which are later treated differently
+specialWordsTrain <- c()
+specialWordsTest <- c()
+
+## Or alternatively compute tf-idf in order to classify words in questions that are not part of the intersect between two questions
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # create features -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-train <-  train_
+train <- train %>%
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+                ,question2 = fullstop(wtoken(question2), FALSE)
+                ,nchars = nchar_diff(question1, question2)
+                ,nmatchpct1 = nmatch1 / nword(question1)
+                ,nmatchpct2 = nmatch1 / nword(question2)
+                ,nwords = nword_diff(question1, question2)
+                ,nmatch2 = nmatch(question1, question2)
+                ,nmatch2 = match(question1, question2)
+                ,samesies = sames(question1, question2)
+                ,last = wlast(question1, question2)
+                ,wordcor = wordorder(question1, question2))
 
 train <- train %>%
-        mutate(nchars = nchar_diff(question1, question2),
-               nmatch1 = nmatch(fullstop(wtoken(question1)),
-                                fullstop(wtoken(question2))),
-               question1 = fullstop(wtoken(question1), FALSE),
-               question2 = fullstop(wtoken(question2), FALSE),
-               nmatchpct1 = nmatch1 / nword(question1),
-               nmatchpct2 = nmatch1 / nword(question2)) %>%
-        mutate(nwords = nword_diff(question1, question2),
-               nmatch2 = nmatch(question1, question2),
-               bigword = bigwordmatch(question1, question2),
-               chunks = chunker(question1, question2),
-               sames = samesies(question1, question2),
-               first = wfirst(question1, question2),
-               last = wlast(question1, question2),
-               wordcor = wordorder(question1, question2),
-               nonwords = nonwords(question1, question2))
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
+               )
 
-train_backup <- train
+
+
+testing <- train[1:1000,.(question1 = fullstop(wtoken(question1), FALSE)
+                  ,question2 = fullstop(wtoken(question2), FALSE)
+                  ,intersect = calcIntersect(question1, question2)
+                  )]
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # train model -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 ## reduce and format data
+train_backup <- train
 train <- train %>%
-        mutate(is_duplicate = as.numeric(is_duplicate),
-                nonwords = as.numeric(nonwords),
-                sames = as.numeric(sames),
-                first = as.numeric(first),
-                last = as.numeric(last)) %>%
+        mutate(is_duplicate = as.numeric(is_duplicate)
+                ,nonwords = as.numeric(nonwords)
+                ,sames = as.numeric(sames)
+                ,last = as.numeric(last)) %>%
                         .[, !names(.) %in% c("id", "qid1", "qid2", "nwords",
                              "question1", "question2")]
-
-## create test set #1
-d1 <- e %>%
-        rsamp(1000)
-
-## create test set #2
-d2 <- e %>%
-        rsamp(1000)
-
 
 # create data matrix for xgb model
 train.model <- xgb.DMatrix(data = as.matrix(train %>% select(-is_duplicate)), label = train$is_duplicate)
@@ -339,10 +373,6 @@ params <- list(objective = "binary:logitraw",
 cv <- xgb.cv(train.model, params = params, nthread = nthread, nfold = nfold, nround = nround)
 
 xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nthread = nthread, nround = nround, objective = "binary:logitraw")
+importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
 
 
-## save model
-saveRDS(mod, "../input/mod.rds")
-
-## view model results
-summary(mod)
