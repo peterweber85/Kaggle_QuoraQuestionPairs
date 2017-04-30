@@ -17,10 +17,18 @@ library("tm")
 library("tokenizers")
 library("data.table")
 library("xgboost")
+library("tictoc")
 
 ########################################
 ####### User defined functions  ########
 ########################################
+tic()
+
+## predictor function
+pred_thres <- function(x,thres=0.5) {
+        if(x > thres) {1} else {0}
+}
+
 
 ## ascii handler function
 get_ascii <- function(x, invert = FALSE) {
@@ -207,12 +215,16 @@ logloss <- function(actual, predicted, eps = 1e-15) {
 # load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # set flag for directory choice
-homeflag <- FALSE
+homeflag <- TRUE
 
 if (homeflag == TRUE) {
   train_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/train.csv")
   test_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/test.csv")
   sample_submission_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/sample_submission.csv")
+  
+  ## load cleaned data set
+  #train_c <- fread(file="test_c.csv")
+  #train_c <- fread(file="train_c.csv")
 } else {
   train_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/train.csv")
   test_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/test.csv")
@@ -274,7 +286,7 @@ test <- test_
 
 ## calculate vars for training data
 train <- train %>%
-        slice(1:1001) %>%
+        #slice(1:1001) %>%
         mutate(nchars = nchar_diff(question1, question2),
                nmatch1 = nmatch(fullstop(wtoken(question1)),
                                 fullstop(wtoken(question2))),
@@ -294,7 +306,7 @@ train <- train %>%
 
 ## calculate vars for training data
 test <- test %>%
-        slice(1:1001) %>%
+        #slice(1:1001) %>%
   mutate(nchars = nchar_diff(question1, question2),
          nmatch1 = nmatch(fullstop(wtoken(question1)),
                           fullstop(wtoken(question2))),
@@ -327,6 +339,8 @@ train_c <- train_c %>%
                nonwords = as.numeric(nonwords)) %>%
         .[, !names(.) %in% c("id", "qid1", "qid2", "nwords",
                              "question1", "question2")]         # WHY TAKE OUT nwords ??? compare!
+# save test data
+fwrite(train_c,"train_c.csv")
 
 ## create valid set #1 & 2
 d1 <- train %>%
@@ -339,15 +353,15 @@ d2 <- train %>%
 # create data matrix for xgb model
 train.model <- xgb.DMatrix(data = as.matrix(train_c %>% select(-is_duplicate)), label = train_c$is_duplicate)
 
-num_class = 2
 #nthread = 8  #if not set, use of all threads
 nfold = 5
-nround = 10
-max_depth = 15
-eta = 1
+nround = 30
+max_depth = 7
+eta = 0.5
 
 # set the model parameters
-params <- list(objective = "binary:logitraw",
+params <- list(objective = "binary:logistic",
+               #eval_metric = "logloss",
                max_depth = max_depth,
                eta = eta
 )
@@ -356,7 +370,10 @@ params <- list(objective = "binary:logitraw",
 cv <- xgb.cv(train.model, params = params, nfold = nfold, nround = nround)
 
 # train the final model
-xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nround = nround, objective = "binary:logitraw")
+xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nround = nround, objective = "binary:logistic")
+
+# importance of individual features
+importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
 
 
 ########################################
@@ -372,9 +389,19 @@ test_c <- test_c %>%
          nonwords = as.numeric(nonwords)) %>%
   .[, !names(.) %in% c("test_id", "nwords",
                        "question1", "question2")]
+# save test data
+fwrite(test_c,"test_c.csv")
+
 
 # prediction on test data
-predictions <- predict(model, newdata = as.matrix(test_c))
-predictions
+predictions_prob <- predict(xgbModel, newdata = as.matrix(test_c))
+predictions <- sapply(predictions_prob,pred_thres)
+
+# prepare submission
+submission <- mutate(sample_submission_,is_duplicate = predictions)
+
+# save submission
+fwrite(submission,"submission.csv")
 
 # condition the predictions for submission according to sample-submission
+toc()
