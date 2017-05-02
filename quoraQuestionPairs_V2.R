@@ -118,6 +118,13 @@ word_shares <- function(q1,q2) {
                 # include a Hamming distance (https://en.wikipedia.org/wiki/Hamming_distance) type word comparison
                 words_hamming <- sum(q1[1:min(length(q1), length(q2))] == q2[1:min(length(q1), length(q2))])/max(length(q1),length(q2))
                 
+                #synonyms of wordnet, pos can be either "ADJECTIVE", "ADVERB", "NOUN", or "VERB"
+                # non_shared_q1 <- setdiff(q1words,q2words)
+                # non_shared_q2 <- setdiff(q2words,q1words) #test the difference between both
+                # for every of the non_shared_q1, get all synomyms with synonyms(word, pos) [check for all four categories]
+                # and check if they are in non_shared_q2. Sum up the hits. do it the other way around two. maybe write a function for that.
+                # calculate again for both the factor over the sum of both non_shared, which is non_shared_words
+                
                 shared_weights <- weights_train[word %in% shared_words,sum(weight)]
                 non_shared_weights <- weights_train[word %in% non_shared_words,sum(weight)]
                 q1_weights <- weights_train[word %in% q1words,sum(weight)]
@@ -239,7 +246,7 @@ train <- train_
 test <- test_
 
 #choice to slice and number of test examples
-slice_flag <- TRUE
+slice_flag <- FALSE
 ex <- 1001
 
 ## looking at the original questions as one string
