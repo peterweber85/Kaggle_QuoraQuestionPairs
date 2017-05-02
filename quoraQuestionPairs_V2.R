@@ -1,4 +1,5 @@
 # ideas: https://www.kaggle.com/tanlikesmath/quora-question-pairs/xgb-starter-12357/code
+#        https://www.kaggle.com/axelius/quora-question-pairs/blehhhh/code same as https://www.kaggle.com/hyoung/quora-question-pairs/xgb-with-whq-jaccard
 
 rm(list=ls())
 
@@ -16,7 +17,6 @@ library("tictoc")
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-tic()
 
 # set flag for directory choice
 homeflag <- TRUE
@@ -34,7 +34,6 @@ if (homeflag == TRUE) {
         test_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/test.csv")
         sample_submission_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/sample_submission.csv")
 }
-
 
 ########################################
 ####### User defined functions  ########
@@ -82,36 +81,84 @@ get_weight <- function(count, eps=10000, min_count =2) {
         ifelse(count < min_count, 0 , 1/(count+eps))
 }
 
-## create function, that splits the words of individual questions and calculates their individual shares and their ratios
+# create an outersect function
+outersect <- function(x, y) {
+        sort(c(setdiff(x, y),
+               setdiff(y, x)))
+}
 
+## create function, that splits the words of individual questions and calculates their individual shares and their ratios
 word_shares <- function(q1,q2) {
         foo <- function(q1,q2) {
                 q1words <- setdiff(q1,stopwords)
                 q2words <- setdiff(q2,stopwords)
-                if(length(q1words) == 0) return(paste(c(0,0,0,0,0),collapse = ":"))
-                if(length(q2words) == 0) return(paste(c(0,0,0,0,0),collapse = ":"))
+                if(length(q1words) == 0) return(paste(c(0,0,0,0,0,0),collapse = ":"))
+                if(length(q2words) == 0) return(paste(c(0,0,0,0,0,0),collapse = ":"))
                 
                 q1stops <- intersect(q1,stopwords)
                 q2stops <- intersect(q2,stopwords)
                 
                 shared_words <- intersect(q1words,q2words)
+                non_shared_words <- outersect(q1words,q2words)
                 
                 shared_weights <- weights_train[word %in% shared_words,sum(weight)]
+                non_shared_weights <- weights_train[word %in% non_shared_words,sum(weight)]
                 #shared_weights <- sum(unlist(sapply(shared_words,function(x) weights_train[weights_train$word == x,]$weight)))
                 total_weights <- weights_train[word %in% q1words,sum(weight)] + weights_train[word %in% q2words,sum(weight)]
                 #total_weights <- sum(unlist(sapply(q1words,function(x) weights_train[weights_train$word == x,]$weight))) +
                                 #sum(unlist(sapply(q2words,function(x) weights_train[weights_train$word == x,]$weight)))
-                        
-                A <- shared_weights/total_weights
-                B <- length(shared_words)/(length(q1words) + length(q2words))
+                
+                if(total_weights == 0) {
+                        A <- 0
+                        E <- 0
+                } else {
+                        A <- shared_weights/total_weights
+                        E <- non_shared_weights/total_weights
+                }
+                if((length(q1words) + length(q2words)) == 0) {
+                        B <- 0
+                } else {
+                        B <- length(shared_words)/(length(q1words) + length(q2words))
+                }
                 C <- length(shared_words)
                 D1 <- length(q1stops) / length(q1words)
-                D2 <- length(q2stops) / length(q2words) 
-                
-                return (paste(c(A,B,C,D1,D2),collapse = ":"))
+                D2 <- length(q2stops) / length(q2words)
+
+                return (paste(c(A,B,C,D1,D2,E),collapse = ":"))
         }
         mapply(foo,q1,q2)
 }
+
+phrase_length <- function(q) {
+        foo <- function(q) {
+                length_q <- nchar(q[[1]])
+        }
+        mapply(foo,q)
+}
+
+avg_word_length <- function(q) {
+        foo <- function(q) {
+                length_words <- sum(nchar(q))
+                count_words <- length(q)
+                avg_word_length <- length_words / count_words
+                return(paste(c(length_words,count_words,avg_word_length),collapse = ":"))
+        }
+        mapply(foo,q)
+}
+
+## function to check for same interrogatives
+check_interrogative <- function(q,interrogative) {
+        foo <- function(q,interrogative) {
+                check_q <- (interrogative %in% q)*1
+        }
+        mapply(foo,q,interrogative)
+}
+
+## predictor function
+pred_thres <- function(x,thres=0.5) {
+        ifelse(x > thres,1,0)
+}
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # stopword dictionary -----------------------------------------------
@@ -160,19 +207,44 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ####### Parse text/create variables  #######
 ############################################
+## saving the original
 train <- train_
 test <- test_
 
-## prepare data sets
+#choice to slice and number of test examples
+slice_flag <- TRUE
+ex <- 1001
+
+## looking at the original questions as one string
+if(slice_flag) {
+        train <- train %>%
+                dplyr::slice((1:ex)) %>%
+                mutate(len_q1 = phrase_length(question1),
+                       len_q2 = phrase_length(question2),
+                       diff_len = len_q1 - len_q2)
+        test <- test %>%
+                dplyr::slice((1:ex)) %>%
+                mutate(len_q1 = phrase_length(question1),
+                       len_q2 = phrase_length(question2),
+                       diff_len = len_q1 - len_q2)
+} else {
+        train <- train %>%
+                mutate(len_q1 = phrase_length(question1),
+                       len_q2 = phrase_length(question2),
+                       diff_len = len_q1 - len_q2)
+        test <- test %>%
+                mutate(len_q1 = phrase_length(question1),
+                       len_q2 = phrase_length(question2),
+                       diff_len = len_q1 - len_q2)
+        }
+
+## prepare data sets with split up words
 train <- train %>%
-        dplyr::slice(1:101) %>%
         mutate(question1 = fullstop(wtoken(question1), FALSE)
                ,question2 = fullstop(wtoken(question2), FALSE)
-        
         )
 
 test <- test %>%
-        dplyr::slice(1:1001) %>%
         mutate(question1 = fullstop(wtoken(question1), FALSE)
                ,question2 = fullstop(wtoken(question2), FALSE)
         )
@@ -203,20 +275,154 @@ colnames(weights_test) <- c("word","weight")
 
 weights_test <- weights_test %>%
         mutate(word = as.character(word))
-
                 
 tic()
 ## calculate vars for training data
 train_c <- train %>%
-        select(question1,question2) %>%
-        mutate(word_shares = word_shares(question1,question2),
-               tfidf_word_match = as.numeric(unlist(lapply(word_shares, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
-               word_match = as.numeric(unlist(lapply(word_shares, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
-               shared_count = as.numeric(unlist(lapply(word_shares, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
-               stops1_ratio = as.numeric(unlist(lapply(word_shares, function(x) unlist(stringr::str_split(x,pattern=":"))[4]))),
-               stops2_ratio = as.numeric(unlist(lapply(word_shares, function(x) unlist(stringr::str_split(x,pattern=":"))[5]))),
-               diff_stops_r = stops1_ratio-stops2_ratio)
+        select(is_duplicate,question1,question2,len_q1,len_q2,diff_len) %>%
+        mutate(is_duplicate = as.numeric(is_duplicate),
+               word_shares_ = word_shares(question1,question2),
+               tfidf_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               tfidf_non_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[6]))),
+               word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               shared_count = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               stops1_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[4]))),
+               stops2_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[5]))),
+               diff_stops_r = stops1_ratio-stops2_ratio,
+               avg_word_length_q1_ = avg_word_length(question1),
+               length_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               count_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               avg_word_length_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               avg_word_length_q2_ = avg_word_length(question2),
+               length_words_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               count_words_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               avg_word_length_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               diff_length_words = length_words_q1-length_words_q2,
+               diff_count_words = count_words_q1-count_words_q2,
+               diff_avg_word_length = avg_word_length_q1-avg_word_length_q2,
+               what_check_q1 = check_interrogative(question1,"what"),
+               what_check_q2 = check_interrogative(question2,"what"),
+               what_check_product = what_check_q1*what_check_q2,
+               how_check_q1 = check_interrogative(question1,"how"),
+               how_check_q2 = check_interrogative(question2,"how"),
+               how_check_product = how_check_q1*how_check_q2,
+               which_check_q1 = check_interrogative(question1,"which"),
+               which_check_q2 = check_interrogative(question2,"which"),
+               which_check_product = which_check_q1*which_check_q2,
+               who_check_q1 = check_interrogative(question1,"who"),
+               who_check_q2 = check_interrogative(question2,"who"),
+               who_check_product = who_check_q1*who_check_q2,
+               where_check_q1 = check_interrogative(question1,"where"),
+               where_check_q2 = check_interrogative(question2,"where"),
+               where_check_product = where_check_q1*where_check_q2,
+               when_check_q1 = check_interrogative(question1,"when"),
+               when_check_q2 = check_interrogative(question2,"when"),
+               when_check_product = when_check_q1*when_check_q2,
+               why_check_q1 = check_interrogative(question1,"why"),
+               why_check_q2 = check_interrogative(question2,"why"),
+               why_check_product = why_check_q1*why_check_q2) #%>%
+               #select(-question1,-question2,-word_shares_,-avg_word_length_q1_,-avg_word_length_q2_)
         
+# save train data
+fwrite(train_c,"/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data/train_c.csv")
 
+## calculate vars for test data
+test_c <- test %>%
+        select(question1,question2,len_q1,len_q2,diff_len) %>%
+        mutate(word_shares_ = word_shares(question1,question2),
+               tfidf_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               tfidf_non_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[6]))),
+               word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               shared_count = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               stops1_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[4]))),
+               stops2_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[5]))),
+               diff_stops_r = stops1_ratio-stops2_ratio,
+               avg_word_length_q1_ = avg_word_length(question1),
+               length_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               count_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               avg_word_length_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               avg_word_length_q2_ = avg_word_length(question2),
+               length_words_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               count_words_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               avg_word_length_q2 = as.numeric(unlist(lapply(avg_word_length_q2_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
+               diff_length_words = length_words_q1-length_words_q2,
+               diff_count_words = count_words_q1-count_words_q2,
+               diff_avg_word_length = avg_word_length_q1-avg_word_length_q2,
+               what_check_q1 = check_interrogative(question1,"what"),
+               what_check_q2 = check_interrogative(question2,"what"),
+               what_check_product = what_check_q1*what_check_q2,
+               how_check_q1 = check_interrogative(question1,"how"),
+               how_check_q2 = check_interrogative(question2,"how"),
+               how_check_product = how_check_q1*how_check_q2,
+               which_check_q1 = check_interrogative(question1,"which"),
+               which_check_q2 = check_interrogative(question2,"which"),
+               which_check_product = which_check_q1*which_check_q2,
+               who_check_q1 = check_interrogative(question1,"who"),
+               who_check_q2 = check_interrogative(question2,"who"),
+               who_check_product = who_check_q1*who_check_q2,
+               where_check_q1 = check_interrogative(question1,"where"),
+               where_check_q2 = check_interrogative(question2,"where"),
+               where_check_product = where_check_q1*where_check_q2,
+               when_check_q1 = check_interrogative(question1,"when"),
+               when_check_q2 = check_interrogative(question2,"when"),
+               when_check_product = when_check_q1*when_check_q2,
+               why_check_q1 = check_interrogative(question1,"why"),
+               why_check_q2 = check_interrogative(question2,"why"),
+               why_check_product = why_check_q1*why_check_q2) %>%
+               select(-question1,-question2,-word_shares_,-avg_word_length_q1_,-avg_word_length_q2_)
+
+# save train data
+fwrite(test_c,"/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data/test_c.csv")
 
 toc()
+
+########################################
+####### Training the model  ############
+########################################
+
+## using XGBoost algorithm (according to https://cran.r-project.org/web/packages/xgboost/vignettes/xgboostPresentation.html)
+
+# create data matrix for xgb model
+train.model <- xgb.DMatrix(data = as.matrix(train_c %>% select(-is_duplicate)), label = train_c$is_duplicate)
+
+#nthread = 8  #if not set, use of all threads
+nfold = 5
+nround = 500
+max_depth = 7
+eta = 0.5
+seed = 12357
+
+# set the model parameters
+params <- list(objective = "binary:logistic",
+               eval_metric = "logloss",
+               max_depth = max_depth,
+               eta = eta,
+               seed = seed
+)
+
+# do a cross-validation run to find the optimal parameters
+cv <- xgb.cv(train.model, params = params, nfold = nfold, nround = nround)
+
+# train the final model
+xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nround = nround,nfold = nfold, seed = seed, objective = "binary:logistic")
+
+# importance of individual features
+importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
+importance
+
+########################################
+####### Predicting the test set ########
+########################################
+
+# prediction on test data
+predictions <- predict(xgbModel, newdata = as.matrix(test_c))
+
+# prepare submission
+if(slice_flag) {
+        submission <- mutate(sample_submission_[1:ex,],is_duplicate = predictions)
+} else {
+        submission <- mutate(sample_submission_,is_duplicate = predictions)
+}
+
+# save submission
+fwrite(submission,"/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data/submission.csv")
