@@ -87,26 +87,42 @@ outersect <- function(x, y) {
                setdiff(y, x)))
 }
 
+# create a 2gram function
+twograms_question <- function(q) {
+        twograms <- as.character(1:(length(q)-1))
+        for(i in 1:(length(q)-1)) {
+                twograms[i] <- paste(c(q[i],q[i+1]),collapse = "")
+        }
+        return(twograms)
+}
+
 ## create function, that splits the words of individual questions and calculates their individual shares and their ratios
 word_shares <- function(q1,q2) {
         foo <- function(q1,q2) {
                 q1words <- setdiff(q1,stopwords)
                 q2words <- setdiff(q2,stopwords)
-                if(length(q1words) == 0) return(paste(c(0,0,0,0,0,0),collapse = ":"))
-                if(length(q2words) == 0) return(paste(c(0,0,0,0,0,0),collapse = ":"))
+                if(length(q1words) == 0) return(paste(c(0,0,0,0,0,0,0,0,0),collapse = ":"))
+                if(length(q2words) == 0) return(paste(c(0,0,0,0,0,0,0,0,0),collapse = ":"))
                 
                 q1stops <- intersect(q1,stopwords)
                 q2stops <- intersect(q2,stopwords)
                 
+                # 2grams - pairs of 2 subsequent words in the sentences
+                q1_2gram <- twograms_question(q1)
+                q2_2gram <- twograms_question(q2)
+                shared_2grams <- intersect(q1_2gram,q2_2gram)
+                
                 shared_words <- intersect(q1words,q2words)
                 non_shared_words <- outersect(q1words,q2words)
                 
+                # include a Hamming distance (https://en.wikipedia.org/wiki/Hamming_distance) type word comparison
+                words_hamming <- sum(q1[1:min(length(q1), length(q2))] == q2[1:min(length(q1), length(q2))])/max(length(q1),length(q2))
+                
                 shared_weights <- weights_train[word %in% shared_words,sum(weight)]
                 non_shared_weights <- weights_train[word %in% non_shared_words,sum(weight)]
-                #shared_weights <- sum(unlist(sapply(shared_words,function(x) weights_train[weights_train$word == x,]$weight)))
-                total_weights <- weights_train[word %in% q1words,sum(weight)] + weights_train[word %in% q2words,sum(weight)]
-                #total_weights <- sum(unlist(sapply(q1words,function(x) weights_train[weights_train$word == x,]$weight))) +
-                                #sum(unlist(sapply(q2words,function(x) weights_train[weights_train$word == x,]$weight)))
+                q1_weights <- weights_train[word %in% q1words,sum(weight)]
+                q2_weights <- weights_train[word %in% q2words,sum(weight)]
+                total_weights <- q1_weights + q2_weights
                 
                 if(total_weights == 0) {
                         A <- 0
@@ -123,8 +139,19 @@ word_shares <- function(q1,q2) {
                 C <- length(shared_words)
                 D1 <- length(q1stops) / length(q1words)
                 D2 <- length(q2stops) / length(q2words)
+                F_ <- words_hamming
+                if( (length(q1_2gram)+length(q2_2gram)) == 0 ) {
+                        G <- 0
+                } else {
+                        G <- length(shared_2grams) / (length(q1_2gram) + length(q2_2gram))
+                }
+                if (q1_weights == 0 | q2_weights==0) {
+                        H <- 0
+                } else {
+                        H <- shared_weights^2/q1_weights/q2_weights
+                }
 
-                return (paste(c(A,B,C,D1,D2,E),collapse = ":"))
+                return (paste(c(A,B,C,D1,D2,E,F_,G,H),collapse = ":"))
         }
         mapply(foo,q1,q2)
 }
@@ -283,12 +310,18 @@ train_c <- train %>%
         mutate(is_duplicate = as.numeric(is_duplicate),
                word_shares_ = word_shares(question1,question2),
                tfidf_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               tfidf_word_match_2root = sqrt(tfidf_word_match),
                tfidf_non_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[6]))),
+               tfidf_non_word_match_2root = sqrt(tfidf_non_word_match),
                word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               word_match_2root = sqrt(word_match),
                shared_count = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
                stops1_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[4]))),
                stops2_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[5]))),
                diff_stops_r = stops1_ratio-stops2_ratio,
+               words_hamming = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[7]))),
+               shared_2grams = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[8]))),
+               cosine = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[9]))),
                avg_word_length_q1_ = avg_word_length(question1),
                length_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
                count_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
@@ -320,8 +353,8 @@ train_c <- train %>%
                when_check_product = when_check_q1*when_check_q2,
                why_check_q1 = check_interrogative(question1,"why"),
                why_check_q2 = check_interrogative(question2,"why"),
-               why_check_product = why_check_q1*why_check_q2) #%>%
-               #select(-question1,-question2,-word_shares_,-avg_word_length_q1_,-avg_word_length_q2_)
+               why_check_product = why_check_q1*why_check_q2) %>%
+               select(-question1,-question2,-word_shares_,-avg_word_length_q1_,-avg_word_length_q2_)
         
 # save train data
 fwrite(train_c,"/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data/train_c.csv")
@@ -331,12 +364,18 @@ test_c <- test %>%
         select(question1,question2,len_q1,len_q2,diff_len) %>%
         mutate(word_shares_ = word_shares(question1,question2),
                tfidf_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
+               tfidf_word_match_2root = sqrt(tfidf_word_match),
                tfidf_non_word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[6]))),
+               tfidf_non_word_match_2root = sqrt(tfidf_non_word_match),
                word_match = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
+               word_match_2root = sqrt(word_match),
                shared_count = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[3]))),
                stops1_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[4]))),
                stops2_ratio = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[5]))),
                diff_stops_r = stops1_ratio-stops2_ratio,
+               words_hamming = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[7]))),
+               shared_2grams = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[8]))),
+               cosine = as.numeric(unlist(lapply(word_shares_, function(x) unlist(stringr::str_split(x,pattern=":"))[9]))),
                avg_word_length_q1_ = avg_word_length(question1),
                length_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[1]))),
                count_words_q1 = as.numeric(unlist(lapply(avg_word_length_q1_, function(x) unlist(stringr::str_split(x,pattern=":"))[2]))),
