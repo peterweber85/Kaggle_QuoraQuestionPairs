@@ -1,9 +1,8 @@
+rm(list=ls())
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # Libraries & auxiliary functions -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-rm(list=ls())
 
 library("RMySQL")
 library("dplyr")
@@ -17,7 +16,21 @@ library("gtools")
 library("tm")
 library("tokenizers")
 library("data.table")
+library("xgboost")
+library("tictoc")
 
+########################################
+####### User defined functions  ########
+########################################
+tic()
+
+## predictor function
+pred_thres <- function(x,thres=0.5) {
+        if(x > thres) {1} else {0}
+}
+
+
+## ascii handler function
 get_ascii <- function(x, invert = FALSE) {
         i <- grep("\\+", iconv(x, "latin1", "ASCII", "+"),
                   invert = !invert)
@@ -26,9 +39,9 @@ get_ascii <- function(x, invert = FALSE) {
         x <- iconv(x, "latin1", "utf-8", " ")
         x[i]
 }
-
+## utf8 encoded
 get_utf8 <- function(x) iconv(x, "latin1", "utf-8", "")
-
+## tokenize by word
 wtoken <- function(q) {
         ## remove periods, comas, question marks
         q <- gsub("\\.|\\,|\\?|\\:|\\;|\\(|\\)|\\[|\\]|\\+|\\*|\\{|\\}",
@@ -42,7 +55,6 @@ wtoken <- function(q) {
         ## convert to utf-8 and return
         lapply(q, get_utf8)
 }
-
 ## filter for stopwords
 fullstop <- function(q, fullstop = TRUE) {
         ## if non-null rm stopwords
@@ -57,31 +69,168 @@ fullstop <- function(q, fullstop = TRUE) {
         ## return words
         q
 }
-
-## word counts (corrected)
+## word counts
 nword <- function(q) {
-  sapply(gregexpr("\\W+", q), length) + 1
+        vapply(q, length, double(1))
 }
 ## word count diff
 nword_diff <- function(q1, q2) {
-  if (any(is.na(c(q1, q2)))) return(0)
-  abs(as.numeric(nword(q1) - nword(q2)))
+        if (any(is.na(c(q1, q2)))) return(0)
+        abs(as.numeric(nword(q1) - nword(q2)))
 }
 ## char count diff
 nchar_diff <- function(q1, q2) {
-  if (any(is.na(c(q1, q2)))) return(0)
-  abs(as.numeric(nchar(q1) - nchar(q2)))
+        if (any(is.na(c(q1, q2)))) return(0)
+        abs(as.numeric(nchar(q1) - nchar(q2)))
+}
+## count matches
+nmatch <- function(q1, q2) {
+        ## sum matches fun
+        f1 <- function(q1, q2) {
+                if (!any(q1 %in% q2)) return(0)
+                sums <- c(sum(q1 %in% q2, na.rm = TRUE),
+                          sum(q2 %in% q1, na.rm = TRUE))
+                sums[which.max(sums)]
+        }
+        ## return # of matches
+        x <- mapply(f1, q1, q2)
+        ## return as numeric
+        as.numeric(x)
+}
+## random sample
+rsamp <- function(x, n = 100) x[sample(seq_len(nrow(x)), n), ]
+## match big words
+bigwordmatch <- function(q1, q2) {
+        ## function to get biggest word
+        bigword <- function(x) x[order(nchar(x))][1]
+        ## function to collapse other big words
+        pc <- function(x, n = 2) {
+                if (length(x) < n) n <- length(x)
+                x <- x[order(nchar(x))][seq_len(n)]
+                paste(x, collapse = "")
+        }
+        ## function to match big words
+        f1 <- function(q1, q2) {
+                all(grepl(bigword(q1), pc(q2)),
+                    grepl(bigword(q2), pc(q1)))
+        }
+        ## apply to each pair
+        f2 <- function(q1, q2) mapply(f1, q1, q2)
+        ## return # of big word matches
+        as.numeric(f2(q1, q2))
+}
+## chunker
+chunker <- function(q1, q2) {
+        f0 <- function(x) strsplit(paste(x, collapse = ""), "")
+        q1 <- lapply(q1, f0)
+        q1 <- unlist(q1, recursive = FALSE)
+        q2 <- lapply(q2, f0)
+        q2 <- unlist(q2, recursive = FALSE)
+        f1 <- function(n) {
+                n <- n[n != " "]
+                x <- lapply(seq(0, length(n), 3), function(x) c(1:3) + x)
+                x <- lapply(x, function(i) paste(n[i], collapse = ""))
+                grep("NA", x, invert = TRUE, value = TRUE)
+        }
+        ## apply function
+        q1 <- lapply(q1, f1)
+        q2 <- lapply(q2, f1)
+        ## matching fun
+        matching <- function(a, b) {
+                sum(a %in% b, na.rm = TRUE)
+        }
+        x <- mapply(matching, q1, q2)
+        as.numeric(x)
+}
+## who what when where why how
+wwwwwh <- function(q1, q2) {
+        types <- c("who", "what", "when", "where", "why", "how")
+        w <- function(a, b, c) {
+                mapply(function(a, b) grepl(c, paste(a, collapse = " ")) &
+                               grepl(c, paste(b, collapse = " ")),
+                       q1, q2, USE.NAMES = FALSE)
+        }
+        w1 <- w(q1, q2, "who")
+        w2 <- w(q1, q2, "what")
+        w3 <- w(q1, q2, "when")
+        w4 <- w(q1, q2, "where")
+        w5 <- w(q1, q2, "why")
+        w6 <- w(q1, q2, "how")
+        mapply(sum, w1, w2, w3, w4, w5, w6, na.rm = TRUE,
+               USE.NAMES = FALSE)
+}
+## first word match
+wfirst <- function(q1, q2) {
+        mapply(function(a, b) a[1] == b[1], q1, q2, USE.NAMES = FALSE)
+}
+## last word match
+wlast <- function(q1, q2) {
+        mapply(function(a, b) a[length(a)] == b[length(b)],
+               q1, q2, USE.NAMES = FALSE)
+}
+## non words
+nonwords <- function(q1, q2) {
+        foo <- function(q) vapply(q, function(.)
+                grepl("[^[:lower:]]", .), logical(1),
+                USE.NAMES = FALSE)
+        q1 <- lapply(q1, function(q) sum(foo(q), na.rm = TRUE))
+        q2 <- lapply(q2, function(q) sum(foo(q), na.rm = TRUE))
+        mapply(function(a, b) min(c(a, b), na.rm = TRUE), q1, q2)
+}
+## rankcor
+wordorder <- function(q1, q2) {
+        foo <- function(a, b) {
+                x <- list(a = unique(a[a %in% b]),
+                          b = unique(b[b %in% a]))
+                x <- list(factor(x[[1]], levels = x[[1]]),
+                          factor(x[[2]], levels = x[[1]]))
+                x <- lapply(x, as.integer)
+                x <- cor(x[[1]], x[[2]], method = "kendall")
+                x[is.na(x)] <- 0
+                x
+        }
+        mapply(foo, q1, q2)
+}
+## samesies
+samesies <- function(q1, q2) {
+        foo <- function(q1, q2) {
+                x <- all(q1 %in% q2)
+                if (x) return(x)
+                q1 <- fullstop(q1)
+                q2 <- fullstop(q2)
+                if (length(q1) > 0 & length(q2) > 0) return(all(q1 %in% q2))
+                FALSE
+        }
+        mapply(foo, q1, q2)
+}
+## logloss function
+logloss <- function(actual, predicted, eps = 1e-15) {
+        predicted = pmin(pmax(predicted, eps, na.rm = TRUE),
+                         1 - eps, na.rm = TRUE)
+        - (sum(actual * log(predicted) + (1 - actual) *
+                       log(1 - predicted), na.rm = TRUE)) / length(actual)
 }
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-# load date --------------------------------------------------------
+# load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
-test <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
-sample_submission <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+# set flag for directory choice
+homeflag <- TRUE
 
-countries <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
-countries <- lapply(countries, tolower)$countryName
+if (homeflag == TRUE) {
+  train_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/train.csv")
+  test_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/test.csv")
+  sample_submission_ <- fread(file = "/Users/benwo/Dropbox/DataScience/Kaggle_QuoraQuestionPairs_local/data_set/sample_submission.csv")
+  
+  ## load cleaned data set
+  #train_c <- fread(file="test_c.csv")
+  #train_c <- fread(file="train_c.csv")
+} else {
+  train_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/train.csv")
+  test_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/test.csv")
+  sample_submission_ <- fread(file = "/Users/bwolter/PhD/private/data/Kaggle_QQP_data/sample_submission.csv")
+}
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # stopword dictionary -----------------------------------------------
@@ -130,15 +279,129 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # playground -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+####### Parse text/create variables  #######
+############################################
+train <- train_
+test <- test_
 
-aux <- train %>%
-        dplyr::select(question1, question2) %>%
-        slice(1:10) %>%
-        mutate(q1_token = wtoken(question1),
-               q2_token = wtoken(question2)
-        )
+## calculate vars for training data
+train <- train %>%
+        #slice(1:1001) %>%
+        mutate(nchars = nchar_diff(question1, question2),
+               nmatch1 = nmatch(fullstop(wtoken(question1)),
+                                fullstop(wtoken(question2))),
+               question1 = fullstop(wtoken(question1), FALSE),
+               question2 = fullstop(wtoken(question2), FALSE),
+               nmatchpct1 = nmatch1 / nword(question1),
+               nmatchpct2 = nmatch1 / nword(question2)) %>%
+        mutate(nwords = nword_diff(question1, question2),
+               nmatch2 = nmatch(question1, question2),
+               bigword = bigwordmatch(question1, question2),
+               chunks = chunker(question1, question2),
+               sames = samesies(question1, question2),
+               first = wfirst(question1, question2),
+               last = wlast(question1, question2),
+               wordcor = wordorder(question1, question2),
+               nonwords = nonwords(question1, question2))
+
+## calculate vars for training data
+test <- test %>%
+        #slice(1:1001) %>%
+  mutate(nchars = nchar_diff(question1, question2),
+         nmatch1 = nmatch(fullstop(wtoken(question1)),
+                          fullstop(wtoken(question2))),
+         question1 = fullstop(wtoken(question1), FALSE),
+         question2 = fullstop(wtoken(question2), FALSE),
+         nmatchpct1 = nmatch1 / nword(question1),
+         nmatchpct2 = nmatch1 / nword(question2)) %>%
+  mutate(nwords = nword_diff(question1, question2),
+         nmatch2 = nmatch(question1, question2),
+         bigword = bigwordmatch(question1, question2),
+         chunks = chunker(question1, question2),
+         sames = samesies(question1, question2),
+         first = wfirst(question1, question2),
+         last = wlast(question1, question2),
+         wordcor = wordorder(question1, question2),
+         nonwords = nonwords(question1, question2))
 
 
-lapply(aux, strsplit(split = " "))
+########################################
+####### Training the model  ############
+########################################
+train_c <- train
 
-removeWords(aux[1,1], stopwords)
+## reduce and format data
+train_c <- train_c %>%
+        mutate(is_duplicate = as.numeric(is_duplicate),
+               sames = as.numeric(sames),
+               first = as.numeric(first),
+               last = as.numeric(last),
+               nonwords = as.numeric(nonwords)) %>%
+        .[, !names(.) %in% c("id", "qid1", "qid2", "nwords",
+                             "question1", "question2")]         # WHY TAKE OUT nwords ??? compare!
+# save test data
+fwrite(train_c,"train_c.csv")
+
+## create valid set #1 & 2
+d1 <- train %>%
+        rsamp(1000)
+d2 <- train %>%
+        rsamp(1000)
+
+## using XGBoost algorithm (according to https://cran.r-project.org/web/packages/xgboost/vignettes/xgboostPresentation.html)
+
+# create data matrix for xgb model
+train.model <- xgb.DMatrix(data = as.matrix(train_c %>% select(-is_duplicate)), label = train_c$is_duplicate)
+
+#nthread = 8  #if not set, use of all threads
+nfold = 5
+nround = 30
+max_depth = 7
+eta = 0.5
+
+# set the model parameters
+params <- list(objective = "binary:logistic",
+               #eval_metric = "logloss",
+               max_depth = max_depth,
+               eta = eta
+)
+
+# do a cross-validation run to find the optimal parameters
+cv <- xgb.cv(train.model, params = params, nfold = nfold, nround = nround)
+
+# train the final model
+xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nround = nround, objective = "binary:logistic")
+
+# importance of individual features
+importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
+
+
+########################################
+####### Predicting the test set ########
+########################################
+test_c <- test
+
+## reduce and format data
+test_c <- test_c %>%
+  mutate(sames = as.numeric(sames),
+         first = as.numeric(first),
+         last = as.numeric(last),
+         nonwords = as.numeric(nonwords)) %>%
+  .[, !names(.) %in% c("test_id", "nwords",
+                       "question1", "question2")]
+# save test data
+fwrite(test_c,"test_c.csv")
+
+
+# prediction on test data
+predictions_prob <- predict(xgbModel, newdata = as.matrix(test_c))
+predictions <- sapply(predictions_prob,pred_thres)
+
+# prepare submission
+submission <- mutate(sample_submission_,is_duplicate = predictions)
+
+# save submission
+fwrite(submission,"submission.csv")
+
+# condition the predictions for submission according to sample-submission
+toc()
