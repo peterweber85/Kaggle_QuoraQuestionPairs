@@ -13,6 +13,8 @@ library("data.table")
 library("stringr")
 library("xgboost")
 library("tictoc")
+library("wordnet")
+setDict("/usr/local/Cellar/wordnet/3.1")
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # load data --------------------------------------------------------
@@ -96,6 +98,16 @@ twograms_question <- function(q) {
         return(twograms)
 }
 
+compare_synonyms <- function(q1,q2) {
+        foo <- function(q1,q2) {
+                for(i in length(q1)) {
+                        bar <- synonyms(q1[i],"NOUN")
+                        sum(bar %in% q2)
+                }
+        }        
+        mapply(foo,q1,q2)
+}
+
 ## create function, that splits the words of individual questions and calculates their individual shares and their ratios
 word_shares <- function(q1,q2) {
         foo <- function(q1,q2) {
@@ -119,8 +131,9 @@ word_shares <- function(q1,q2) {
                 words_hamming <- sum(q1[1:min(length(q1), length(q2))] == q2[1:min(length(q1), length(q2))])/max(length(q1),length(q2))
                 
                 #synonyms of wordnet, pos can be either "ADJECTIVE", "ADVERB", "NOUN", or "VERB"
-                # non_shared_q1 <- setdiff(q1words,q2words)
-                # non_shared_q2 <- setdiff(q2words,q1words) #test the difference between both
+                non_shared_q1 <- setdiff(q1words,q2words)
+                non_shared_q2 <- setdiff(q2words,q1words)
+                
                 # for every of the non_shared_q1, get all synomyms with synonyms(word, pos) [check for all four categories]
                 # and check if they are in non_shared_q2. Sum up the hits. do it the other way around two. maybe write a function for that.
                 # calculate again for both the factor over the sum of both non_shared, which is non_shared_words
