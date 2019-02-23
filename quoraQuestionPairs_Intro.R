@@ -1,23 +1,32 @@
-
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # Libraries & auxiliary functions -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 rm(list=ls())
 
-library("RMySQL")
-library("dplyr")
-library("plotly")
-library("lubridate")
-library("reshape")
-library("reshape2")
-library("knitr")
-library("readr")
-library("gtools")
-library("tm")
-library("tokenizers")
-library("data.table")
+library("tictoc")
+require("dplyr")
+require("data.table")
+require("xgboost")
 
+require("stringr")
+require("tokenizers")
+require("tm")
+require("SnowballC")
+require("wordcloud")
+require("RColorBrewer")
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Parameters -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+privateMac = TRUE
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# Auxiliary functions -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+## ascii handler function
 get_ascii <- function(x, invert = FALSE) {
         i <- grep("\\+", iconv(x, "latin1", "ASCII", "+"),
                   invert = !invert)
@@ -26,9 +35,9 @@ get_ascii <- function(x, invert = FALSE) {
         x <- iconv(x, "latin1", "utf-8", " ")
         x[i]
 }
-
+## utf8 encoded
 get_utf8 <- function(x) iconv(x, "latin1", "utf-8", "")
-
+## tokenize by word
 wtoken <- function(q) {
         ## remove periods, comas, question marks
         q <- gsub("\\.|\\,|\\?|\\:|\\;|\\(|\\)|\\[|\\]|\\+|\\*|\\{|\\}",
@@ -42,7 +51,6 @@ wtoken <- function(q) {
         ## convert to utf-8 and return
         lapply(q, get_utf8)
 }
-
 ## filter for stopwords
 fullstop <- function(q, fullstop = TRUE) {
         ## if non-null rm stopwords
@@ -57,16 +65,171 @@ fullstop <- function(q, fullstop = TRUE) {
         ## return words
         q
 }
+## word counts
+nword <- function(q) {
+        vapply(q, length, double(1))
+}
+## word count diff
+nword_diff <- function(q1, q2) {
+        if (any(is.na(c(q1, q2)))) return(0)
+        abs(as.numeric(nword(q1) - nword(q2)))
+}
+## char count diff
+nchar_diff <- function(q1, q2) {
+        if (any(is.na(c(q1, q2)))) return(0)
+        abs(as.numeric(nchar(q1) - nchar(q2)))
+}
+## count matches
+nmatch <- function(q1, q2) {
+        ## sum matches fun
+        f1 <- function(q1, q2) {
+                if (!any(q1 %in% q2)) return(0)
+                sums <- c(sum(q1 %in% q2, na.rm = TRUE),
+                          sum(q2 %in% q1, na.rm = TRUE))
+                sums[which.max(sums)]
+        }
+        ## return # of matches
+        x <- mapply(f1, q1, q2)
+        ## return as numeric
+        as.numeric(x)
+}
+## random sample
+rsamp <- function(x, n = 100) x[sample(seq_len(nrow(x)), n), ]
+## match big words
+bigwordmatch <- function(q1, q2) {
+        ## function to get biggest word
+        bigword <- function(x) x[order(nchar(x))][1]
+        ## function to collapse other big words
+        pc <- function(x, n = 2) {
+                if (length(x) < n) n <- length(x)
+                x <- x[order(nchar(x))][seq_len(n)]
+                paste(x, collapse = "")
+        }
+        ## function to match big words
+        f1 <- function(q1, q2) {
+                all(grepl(bigword(q1), pc(q2)),
+                    grepl(bigword(q2), pc(q1)))
+        }
+        ## apply to each pair
+        f2 <- function(q1, q2) mapply(f1, q1, q2)
+        ## return # of big word matches
+        as.numeric(f2(q1, q2))
+}
+## chunker
+chunker <- function(q1, q2) {
+        f0 <- function(x) strsplit(paste(x, collapse = ""), "")
+        q1 <- lapply(q1, f0)
+        q1 <- unlist(q1, recursive = FALSE)
+        q2 <- lapply(q2, f0)
+        q2 <- unlist(q2, recursive = FALSE)
+        f1 <- function(n) {
+                n <- n[n != " "]
+                x <- lapply(seq(0, length(n), 3), function(x) c(1:3) + x)
+                x <- lapply(x, function(i) paste(n[i], collapse = ""))
+                grep("NA", x, invert = TRUE, value = TRUE)
+        }
+        ## apply function
+        q1 <- lapply(q1, f1)
+        q2 <- lapply(q2, f1)
+        ## matching fun
+        matching <- function(a, b) {
+                sum(a %in% b, na.rm = TRUE)
+        }
+        x <- mapply(matching, q1, q2)
+        as.numeric(x)
+}
+## who what when where why how
+wwwwwh <- function(q1, q2) {
+        types <- c("who", "what", "when", "where", "why", "how")
+        w <- function(a, b, c) {
+                mapply(function(a, b) grepl(c, paste(a, collapse = " ")) &
+                               grepl(c, paste(b, collapse = " ")),
+                       q1, q2, USE.NAMES = FALSE)
+        }
+        w1 <- w(q1, q2, "who")
+        w2 <- w(q1, q2, "what")
+        w3 <- w(q1, q2, "when")
+        w4 <- w(q1, q2, "where")
+        w5 <- w(q1, q2, "why")
+        w6 <- w(q1, q2, "how")
+        mapply(sum, w1, w2, w3, w4, w5, w6, na.rm = TRUE,
+               USE.NAMES = FALSE)
+}
+## first word match
+wfirst <- function(q1, q2) {
+        mapply(function(a, b) a[1] == b[1], q1, q2, USE.NAMES = FALSE)
+}
+## last word match
+wlast <- function(q1, q2) {
+        mapply(function(a, b) a[length(a)] == b[length(b)],
+               q1, q2, USE.NAMES = FALSE)
+}
+## non words
+nonwords <- function(q1, q2) {
+        foo <- function(q) vapply(q, function(.)
+                grepl("[^[:lower:]]", .), logical(1),
+                USE.NAMES = FALSE)
+        q1 <- lapply(q1, function(q) sum(foo(q), na.rm = TRUE))
+        q2 <- lapply(q2, function(q) sum(foo(q), na.rm = TRUE))
+        mapply(function(a, b) min(c(a, b), na.rm = TRUE), q1, q2)
+}
+## rankcor
+wordorder <- function(q1, q2) {
+        foo <- function(a, b) {
+                x <- list(a = unique(a[a %in% b]),
+                          b = unique(b[b %in% a]))
+                x <- list(factor(x[[1]], levels = x[[1]]),
+                          factor(x[[2]], levels = x[[1]]))
+                x <- lapply(x, as.integer)
+                x <- cor(x[[1]], x[[2]], method = "kendall")
+                x[is.na(x)] <- 0
+                x
+        }
+        mapply(foo, q1, q2)
+}
+## samesies
+samesies <- function(q1, q2) {
+        foo <- function(q1, q2) {
+                x <- all(q1 %in% q2)
+                if (x) return(x)
+                q1 <- fullstop(q1)
+                q2 <- fullstop(q2)
+                if (length(q1) > 0 & length(q2) > 0) return(all(q1 %in% q2))
+                FALSE
+        }
+        mapply(foo, q1, q2)
+}
+
+
+## logloss function
+logloss <- function(actual, predicted, eps = 1e-15) {
+        predicted = pmin(pmax(predicted, eps, na.rm = TRUE),
+                         1 - eps, na.rm = TRUE)
+        - (sum(actual * log(predicted) + (1 - actual) *
+                       log(1 - predicted), na.rm = TRUE)) / length(actual)
+}
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-# load date --------------------------------------------------------
+# load data --------------------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-train <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
-test <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
-sample_submission <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+if (privateMac){
+        # Private MacBook
+        train_ <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/train.csv")
+        test_ <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/test.csv")
+        sample_submission_ <- fread(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+        countries_ <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
+} else {
+        # Work MacBook
+        train_ <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/train.csv")
+        test_ <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/test.csv")
+        sample_submission_ <- fread(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/data/sample_submission.csv")
+        countries_ <- read.delim(file = "~/Projects/Kaggle/Kaggle_QuoraQuestionPairs/countryNames.txt")
+}
 
-countries <- read.delim(file = "~/Projects/Git/Kaggle_QuoraQuestionPairs/countryNames.txt")
-countries <- lapply(countries, tolower)$countryName
+countries_ <- lapply(countries_, tolower)$countryName
+train <-  train_
+test <- test_
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # stopword dictionary -----------------------------------------------
@@ -113,17 +276,176 @@ stopwords = c("a", "about", "above", "above", "across", "after", "afterwards", "
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-# playground -----------------------------------------------
+# create wordcloud -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-aux <- train %>%
-        dplyr::select(question1, question2) %>%
-        slice(1:10) %>%
-        mutate(q1_token = wtoken(question1),
-               q2_token = wtoken(question2)
+train <- train %>%
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
+        )
+train <- as.data.table(train)
+
+test <- test %>%
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
+        )
+
+allWordsTrain <-  unlist(c(train$question1, train$question2))
+allWordsTest <- unlist(c(test$question1, test$question2))
+
+corpusTrain <- Corpus(VectorSource(allWordsTrain))
+corpusTest <- Corpus(VectorSource(allWordsTest))
+
+pal <- brewer.pal(9,"BuGn")
+pal <- pal[-(1:4)]
+
+wc1_Train <- wordcloud(corpus, max.words = 500, random.order = FALSE, color = pal, random.color = TRUE)
+wc1_Test <- wordcloud(corpus, max.words = 500, random.order = FALSE, color = pal, random.color = TRUE)
+
+## Include here manually words that appear often, which are later treated differently
+specialWordsTrain <- c()
+specialWordsTest <- c()
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# tf-idf -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+get_weight <- function(count, eps=10000, min_count=2){
+        ifelse(count < min_count, 0, 1/(count + eps))
+}
+
+weights_train <- train %>%
+        select(question1, question2) %>% 
+        unlist() %>% 
+        table() %>% 
+        as.data.frame() %>% 
+        mutate(weight = get_weight(Freq)) %>% 
+        select(-Freq)
+
+colnames(weights_train) <- c("word", "weight")        
+weights_train <- weights_train %>% 
+                        mutate(word = as.character(word)) %>% 
+                        as.data.table()
+setkey(weights_train, word)
+tables()
+
+
+word_shares <- function(q1, q2){
+        
+        foo <- function(q1, q2){
+                q1words <- setdiff(q1, stopwords)
+                q2words <- setdiff(q2, stopwords)
+                
+                if(length(q1words) == 0){return('0:0:0:0:0')}
+                if(length(q2words) == 0){return('0:0:0:0:0')}
+                
+                q1stops = intersect(q1, stopwords)
+                q2stops = intersect(q2, stopwords)
+                
+                shared_words = intersect(q1words, q2words)
+      
+                shared_weights <- weights_train[shared_words, sum(weight)]
+                total_weights <- weights_train[q1words, sum(weight)] + weights_train[q2words, sum(weight)]
+                                
+                R1 = shared_weights / total_weights
+                R2 = length(shared_words) / (length(q1words) + length(q2words))
+                R31 = length(q1stops) / length(q1words)
+                R32 = length(q2stops) / length(q2words)
+                
+                return(paste(c(R1,R2,length(shared_words),R31,R32),collapse = ":"))
+        }
+        mapply(foo, q1, q2)
+}
+
+
+tic()
+trainSlice <- train %>%
+        dplyr::slice(1:1000) %>% 
+        mutate(wordShares = word_shares(question1, question2)
+               ,tfidf_word_match = unlist(as.numeric(
+                       lapply(wordShares, function(x) unlist(stringr::str_split(x, pattern = ":"))[1])))
+               ,word_match = unlist(as.numeric(
+                       lapply(wordShares, function(x) unlist(stringr::str_split(x, pattern = ":"))[2])))
+               ,shared_count = unlist(as.numeric(
+                       lapply(wordShares, function(x) unlist(stringr::str_split(x, pattern = ":"))[3])))
+               ,stops1_ratio = unlist(as.numeric(
+                       lapply(wordShares, function(x) unlist(stringr::str_split(x, pattern = ":"))[4])))
+               ,stops2_ratio = unlist(as.numeric(
+                       lapply(wordShares, function(x) unlist(stringr::str_split(x, pattern = ":"))[5])))
+               ,diff_stops_r = stops1_ratio - stops2_ratio
+               
+        )
+toc()               
+               
+
+
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# create features -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+train <- train %>%
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
+               ,nchars = nchar_diff(question1, question2)
+               ,nmatchpct1 = nmatch1 / nword(question1)
+               ,nmatchpct2 = nmatch1 / nword(question2)
+               ,nwords = nword_diff(question1, question2)
+               ,nmatch2 = nmatch(question1, question2)
+               ,nmatch2 = match(question1, question2)
+               ,samesies = sames(question1, question2)
+               ,last = wlast(question1, question2)
+               ,wordcor = wordorder(question1, question2))
+
+train <- train %>%
+        mutate(question1 = fullstop(wtoken(question1), FALSE)
+               ,question2 = fullstop(wtoken(question2), FALSE)
         )
 
 
-lapply(aux, strsplit(split = " "))
 
-removeWords(aux[1,1], stopwords)
+testing <- train[1:1000,.(question1 = fullstop(wtoken(question1), FALSE)
+                          ,question2 = fullstop(wtoken(question2), FALSE)
+                          ,intersect = calcIntersect(question1, question2)
+)]
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+# train model -----------------------------------------------
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+## reduce and format data
+train_backup <- train
+train <- train %>%
+        mutate(is_duplicate = as.numeric(is_duplicate)
+               ,nonwords = as.numeric(nonwords)
+               ,sames = as.numeric(sames)
+               ,last = as.numeric(last)) %>%
+        .[, !names(.) %in% c("id", "qid1", "qid2", "nwords",
+                             "question1", "question2")]
+
+# create data matrix for xgb model
+train.model <- xgb.DMatrix(data = as.matrix(train %>% select(-is_duplicate)), label = train$is_duplicate)
+
+num_class = 2
+nthread = 8
+nfold = 5
+nround = 20
+max_depth = 3
+eta = 1
+
+params <- list(objective = "binary:logitraw",
+               max_depth = max_depth,
+               eta = eta
+)
+
+cv <- xgb.cv(train.model, params = params, nthread = nthread, nfold = nfold, nround = nround)
+
+xgbModel <- xgboost(train.model, max.depth = max_depth, eta = eta, nthread = nthread, nround = nround, objective = "binary:logitraw")
+importance <- xgb.importance(feature_names = colnames(train.model), model = xgbModel)
+
+sapply(df, function(x) )
+
