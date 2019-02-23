@@ -283,6 +283,7 @@ train <- train %>%
         mutate(question1 = fullstop(wtoken(question1), FALSE)
                ,question2 = fullstop(wtoken(question2), FALSE)
         )
+
 train <- as.data.table(train)
 
 test <- test %>%
@@ -311,10 +312,10 @@ specialWordsTest <- c()
 # tf-idf -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-
 get_weight <- function(count, eps=10000, min_count=2){
         ifelse(count < min_count, 0, 1/(count + eps))
 }
+
 
 weights_train <- train %>%
         select(question1, question2) %>% 
@@ -381,8 +382,6 @@ toc()
                
 
 
-
-
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 # create features -----------------------------------------------
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -407,10 +406,12 @@ train <- train %>%
 
 
 
+
 testing <- train[1:1000,.(question1 = fullstop(wtoken(question1), FALSE)
                           ,question2 = fullstop(wtoken(question2), FALSE)
                           ,intersect = calcIntersect(question1, question2)
 )]
+
 
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
